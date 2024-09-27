@@ -1,12 +1,16 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <HTTPClient.h>
+#include <ArduinoOTA.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
+#include "LittleFS.h"
 
-#define WIFI_SSID "TycheTools"
-#define WIFI_PASSWORD "DanilleX2023"
-// #define WIFI_SSID "Gonmar-Livebox"
-// #define WIFI_PASSWORD "618995151609549464"
+
+// TODO: server in config files
+#define SERVER_STR "http://dartsout.duckdns.org/"
 
 #define PIN_LED1 1
 #define PIN_LED2 2
@@ -136,7 +140,21 @@ static int pin_cols[] = {37, 36, 35, 34, 33, 21, 14, 13, 12, 11};
 static volatile int row_pressed = NOT_DET;
 static volatile int col_pressed = NOT_DET;
 
-static String server = "http://192.168.0.39:8000/";
+static String server_str = SERVER_STR;
+
+AsyncWebServer server(80);
+
+static const char* param_input_1 = "ssid";
+static const char* param_input_2 = "pass";
+static const char* ssid_path = "/ssid.txt";
+static const char* pass_path = "/pass.txt";
+
+static String ssid;
+static String pass;
+
+static unsigned long previousMillis = 0;
+static const long interval = 10000; // Interval to wait for Wi-Fi connection (milliseconds)
+
 
 /** Function prototypes *******************************************************/
 
@@ -147,6 +165,12 @@ static void set_rows_high();
 static void set_rows_low();
 static void print_value(int i, int j);
 static void keypad_setup();
+static void read_mac_addr();
+static int get_dartboard_id();
+static void init_littlefs();
+static String read_file(fs::FS &fs, const char * path);
+static void write_file(fs::FS &fs, const char * path, const char * message);
+static bool init_wifi();
 
 /** Callbacks *****************************************************************/
 
@@ -190,7 +214,7 @@ static void print_value(int i, int j)
 	Serial.print("Num: ");
 	Serial.print(map_numbers[i][j]);
 	Serial.print(", zone: ");
-	switch(map_zones[i][j]) {
+	switch (map_zones[i][j]) {
 	case SINGLE_EXT:
 		Serial.print("SINGLE EXT");
 		break;
@@ -228,7 +252,7 @@ static void send_dart(int num, int zone)
 	if (WiFi.status() == WL_CONNECTED) {
 		WiFiClient client;
 		HTTPClient http;
-		String serverPath = server + "new-dart";
+		String serverPath = server_str + "new-dart?id=0";
 		http.begin(client, serverPath.c_str());
 		http.addHeader("Content-Type", "application/json");
 		StaticJsonDocument<200> json;
@@ -253,11 +277,106 @@ static void send_dart(int num, int zone)
 	}
 }
 
+static void read_mac_addr()
+{
+	uint8_t mac[6];
+	esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, mac);
+	if (ret == ESP_OK) {
+		Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
+				mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	} else {
+		Serial.println("Failed to read MAC address");
+	}
+}
+
+static int get_dartboard_id()
+{
+	uint8_t mac[6];
+	if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+		return (mac[3] << 16) | (mac[4] << 8) | (mac[5] << 0);
+	} else {
+		Serial.println("Failed to get dartboard ID");
+		return 1;
+	}
+}
+
+static void init_littlefs()
+{
+	if (!LittleFS.begin(true)) {
+		Serial.println("An error has occurred while mounting LittleFS");
+	}
+	Serial.println("LittleFS mounted successfully");
+}
+
+
+static String read_file(fs::FS &fs, const char * path)
+{
+	Serial.printf("Reading file: %s\r\n", path);
+
+	File file = fs.open(path);
+	if (!file || file.isDirectory()) {
+		Serial.println("- failed to open file for reading");
+		return String();
+	}
+	
+	String fileContent;
+	while (file.available()) {
+		fileContent = file.readStringUntil('\n');
+		break;
+	}
+	return fileContent;
+}
+
+static void write_file(fs::FS &fs, const char * path, const char * message)
+{
+	Serial.printf("Writing file: %s\r\n", path);
+
+	File file = fs.open(path, FILE_WRITE);
+	if (!file){
+		Serial.println("- failed to open file for writing");
+		return;
+	}
+	if (file.print(message)){
+		Serial.println("- file written");
+	} else {
+		Serial.println("- write failed");
+	}
+}
+
+static bool init_wifi()
+{
+	if (ssid == ""){
+		Serial.println("Undefined SSID");
+		return false;
+	}
+
+	WiFi.mode(WIFI_STA);
+	WiFi.begin(ssid.c_str(), pass.c_str());
+	Serial.println("Connecting to WiFi...");
+
+	unsigned long currentMillis = millis();
+	previousMillis = currentMillis;
+
+	while (WiFi.status() != WL_CONNECTED) {
+		currentMillis = millis();
+		if (currentMillis - previousMillis >= interval) {
+			Serial.println("Failed to connect.");
+			return false;
+		}
+	}
+
+	Serial.println(WiFi.localIP());
+
+	return true;
+}
+
 /* Setup **********************************************************************/
 
 void setup()
 {
 	Serial.begin(115200);
+
+	init_littlefs();
 
 	pinMode(PIN_LED1, OUTPUT);
 	pinMode(PIN_LED2, OUTPUT);
@@ -268,18 +387,71 @@ void setup()
 	keypad_setup();
 	set_rows_low();
 
-	Serial.print("Connecting to WiFi");
-	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-	while (WiFi.status() != WL_CONNECTED) {
-		Serial.print(".");
-		delay(100);
+	ssid = read_file(LittleFS, ssid_path);
+	pass = read_file(LittleFS, pass_path);
+	Serial.println(ssid);
+	Serial.println(pass);
+
+	// Serial.print("Connecting to WiFi");
+	// WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+	// while (WiFi.status() != WL_CONNECTED) {
+	// 	Serial.print(".");
+	// 	delay(100);
+	// }
+
+	// Serial.println("");
+	// Serial.print("Connected to WiFi network with IP Address: ");
+	// Serial.println(WiFi.localIP());
+
+	if (init_wifi()) {
+		digitalWrite(PIN_LED1, HIGH);
+		server.begin();
+	} else {
+		digitalWrite(PIN_LED1, LOW);
+		Serial.println("Setting AP (Access Point)");
+		WiFi.softAP("Dartsout Dartboard", NULL);
+
+		IPAddress IP = WiFi.softAPIP();
+		Serial.print("AP IP address: ");
+		Serial.println(IP); 
+
+		server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+			request->send(LittleFS, "/wifi_manager.html", "text/html");
+		});
+		server.serveStatic("/", LittleFS, "/");
+		server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
+			int params = request->params();
+			for (int i = 0; i < params; i++) {
+				const AsyncWebParameter* p = request->getParam(i);
+				if (p->isPost()) {
+					if (p->name() == param_input_1) {
+						ssid = p->value().c_str();
+						Serial.print("SSID set to: ");
+						Serial.println(ssid);
+						write_file(LittleFS, ssid_path, ssid.c_str());
+					}
+					if (p->name() == param_input_2) {
+						pass = p->value().c_str();
+						Serial.print("Password set to: ");
+						Serial.println(pass);
+						write_file(LittleFS, pass_path, pass.c_str());
+					}
+					
+					//Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+				}
+			}
+			request->send(200, "text/plain", "Done. ESP will restart");
+			delay(3000);
+			ESP.restart();
+		});
+		server.begin();
 	}
 
 	Serial.println("");
-	Serial.print("Connected to WiFi network with IP Address: ");
-	Serial.println(WiFi.localIP());
-
-	digitalWrite(PIN_LED1, HIGH);
+	Serial.print("MAC address: ");
+	read_mac_addr();
+	Serial.print("Dartboard ID: ");
+	Serial.printf("%X\n", get_dartboard_id());
 }
 
 static void keypad_read()
