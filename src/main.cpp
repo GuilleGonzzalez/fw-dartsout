@@ -3,136 +3,21 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <HTTPClient.h>
-#include <ArduinoOTA.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include "LittleFS.h"
 
+#include "dartsout_boardv1.h"
+#include "decathlon_dartboard.h"
 
-// TODO: server in config files
-#define SERVER_STR "http://dartsout.duckdns.org/"
-
-#define PIN_LED1 1
-#define PIN_LED2 2
-
-#define BOARD_ID 0
-
-typedef enum {
-	N_INVALID = -1,
-	BULL = 0,
-	N1 = 1,
-	N2 = 2,
-	N3 = 3,
-	N4 = 4,
-	N5 = 5,
-	N6 = 6,
-	N7 = 7,
-	N8 = 8,
-	N9 = 9,
-	N10 = 10,
-	N11 = 11,
-	N12 = 12,
-	N13 = 13,
-	N14 = 14,
-	N15 = 15,
-	N16 = 16,
-	N17 = 17,
-	N18 = 18,
-	N19 = 19,
-	N20 = 20,
-} numbers_t;
-
-typedef enum {
-	TRIPLE,
-	DOUBLE,
-	SINGLE_INT,
-	SINGLE_EXT,
-	Z_INVALID,
-} zones_t;
-
-/** Global variables **********************************************************/
-
+#define AP_STR   "Dartsout Dartboard"
 #define NOT_DET  -1
 #define ERR_READ -2
 
-// Decathlon board CONN#1
-// #define N_ROWS   7
-// #define N_COLS   10
-// #define ROWS_OFF 2 // First row pin
-// #define COLS_OFF 0 // First col pin
+/** Global variables **********************************************************/
 
-// static int map_numbers[N_ROWS][N_COLS] = {
-// 	{N7, N19, N3, N17, N2, N15, N16, N8, N11, N14},
-// 	{N7, N19, N3, N17, N2, N15, N16, N8, N11, N14},
-// 	{N7, N19, N3, N17, N2, N15, N16, N8, N11, N14},
-// 	{N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, BULL, BULL},
-// 	{N1, N18, N4, N13, N6, N10, N20, N5, N12, N9},
-// 	{N1, N18, N4, N13, N6, N10, N20, N5, N12, N9},
-// 	{N1, N18, N4, N13, N6, N10, N20, N5, N12, N9},
-// };
-
-// static int map_zones[N_ROWS][N_COLS] = {
-// 	{TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE},
-// 	{DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE},
-// 	{SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT},
-// 	{Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, SINGLE_EXT, DOUBLE},
-// 	{SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT},
-// 	{DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE},
-// 	{TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE},
-// };
-
-// Decathlon board CONN#2
-#define N_ROWS   7
-#define N_COLS   10
-#define ROWS_OFF 1 // First row pin
-#define COLS_OFF 0 // First col pin
-
-static int map_numbers[N_ROWS][N_COLS] = {
-	{N9, N12, N5, N20, N10, N6, N13, N4, N18, N1},
-	{N9, N12, N5, N20, N10, N6, N13, N4, N18, N1},
-	{N9, N12, N5, N20, N10, N6, N13, N4, N18, N1},
-	{BULL, BULL, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID, N_INVALID},
-	{N14, N11, N8, N16, N15, N2, N17, N3, N19, N7},
-	{N14, N11, N8, N16, N15, N2, N17, N3, N19, N7},
-	{N14, N11, N8, N16, N15, N2, N17, N3, N19, N7},
-};
-
-static int map_zones[N_ROWS][N_COLS] = {
-	{TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE},
-	{DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE},
-	{SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT},
-	{DOUBLE, SINGLE_EXT, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID},
-	{SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT},
-	{DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE},
-	{TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE},
-};
-
-// Chino dartboard
-// #define N_ROWS   8
-// #define N_COLS   8
-// #define ROWS_OFF 2 // First row pin
-// #define COLS_OFF 0 // First col pin
-// static int map_numbers[N_ROWS][N_COLS] = {
-// 	{N19, N7, N16, N8, N11, N14, N9, N12},
-// 	{N19, N7, N16, N8, N11, N14, N9, N12},
-// 	{N19, N7, N16, N8, N11, N14, N9, N12},
-// 	{N3, N17, N2, N15, N10, N6, N13, N4},
-// 	{N3, N17, N2, N15, N10, N6, N13, N4},
-// 	{N3, N17, N2, N15, N10, N6, N13, N4},
-// 	{Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, BULL, Z_INVALID},
-// 	{Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, BULL, Z_INVALID},
-// };
-
-// static int map_zones[N_ROWS][N_COLS] = {
-// 	{DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE},
-// 	{SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT},
-// 	{TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE},
-// 	{TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE, TRIPLE},
-// 	{SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT, SINGLE_EXT},
-// 	{DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE},
-// 	{Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, SINGLE_EXT, Z_INVALID},
-// 	{Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, Z_INVALID, DOUBLE, Z_INVALID},
-// };
+extern int map_numbers[N_ROWS][N_COLS];
+extern int map_zones[N_ROWS][N_COLS];
 
 static int pin_rows[] = {10, 9, 3, 8, 18, 17, 7, 6, 5, 4};
 static int pin_cols[] = {37, 36, 35, 34, 33, 21, 14, 13, 12, 11};
@@ -140,37 +25,40 @@ static int pin_cols[] = {37, 36, 35, 34, 33, 21, 14, 13, 12, 11};
 static volatile int row_pressed = NOT_DET;
 static volatile int col_pressed = NOT_DET;
 
-static String server_str = SERVER_STR;
-
-AsyncWebServer server(80);
-
-static const char* param_input_1 = "ssid";
-static const char* param_input_2 = "pass";
+static const char* param_ssid = "ssid";
+static const char* param_pass = "pass";
+static const char* param_server = "server";
 static const char* ssid_path = "/ssid.txt";
 static const char* pass_path = "/pass.txt";
+static const char* server_path = "/server.txt";
 
 static String ssid;
 static String pass;
+static String server_url;
 
 static unsigned long previousMillis = 0;
-static const long interval = 10000; // Interval to wait for Wi-Fi connection (milliseconds)
+static const long interval = 10000; // Interval to wait for Wi-Fi conn (ms)
 
+AsyncWebServer server(80);
 
 /** Function prototypes *******************************************************/
 
 static void IRAM_ATTR dart_cb(void* arg);
 
-static void keypad_read();
-static void set_rows_high();
 static void set_rows_low();
+static void set_rows_high();
 static void print_value(int i, int j);
 static void keypad_setup();
+static void send_dart(int num, int zone);
+static void keypad_read();
 static void read_mac_addr();
 static int get_dartboard_id();
 static void init_littlefs();
-static String read_file(fs::FS &fs, const char * path);
-static void write_file(fs::FS &fs, const char * path, const char * message);
+static String read_file(fs::FS &fs, const char* path);
+static void write_file(fs::FS &fs, const char* path, const char* message);
 static bool init_wifi();
+static String processor(const String &var);
+static void server_config();
 
 /** Callbacks *****************************************************************/
 
@@ -211,9 +99,7 @@ static void set_rows_high()
 
 static void print_value(int i, int j)
 {
-	Serial.print("Num: ");
-	Serial.print(map_numbers[i][j]);
-	Serial.print(", zone: ");
+	Serial.printf("Num: %d, zone: ", map_numbers[i][j]);
 	switch (map_zones[i][j]) {
 	case SINGLE_EXT:
 		Serial.print("SINGLE EXT");
@@ -252,10 +138,10 @@ static void send_dart(int num, int zone)
 	if (WiFi.status() == WL_CONNECTED) {
 		WiFiClient client;
 		HTTPClient http;
-		String serverPath = server_str + "new-dart?id=0";
+		String serverPath = server_url + "new-dart?id=0";
 		http.begin(client, serverPath.c_str());
 		http.addHeader("Content-Type", "application/json");
-		StaticJsonDocument<200> json;
+		JsonDocument json;
 		json["board_id"] = BOARD_ID;
 		json["num"] = num;
 		json["zone"] = zone;
@@ -277,12 +163,28 @@ static void send_dart(int num, int zone)
 	}
 }
 
+static void keypad_read()
+{
+	for (int i = 0; i < N_ROWS; i++) {
+		set_rows_high();
+		digitalWrite(pin_rows[i+ROWS_OFF], LOW);
+		for (int j = 0; j < N_COLS; j++) {
+			if (digitalRead(pin_cols[j+COLS_OFF]) == 0) {
+				// i: starts in 1 and no first cable, j: starts in 1
+				Serial.printf("Pressed: %d, %d\n", i-1, j+1);
+				delay(50);
+				return;
+			}
+		}
+	}
+}
+
 static void read_mac_addr()
 {
 	uint8_t mac[6];
 	esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, mac);
 	if (ret == ESP_OK) {
-		Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
+		Serial.printf("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
 				mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 	} else {
 		Serial.println("Failed to read MAC address");
@@ -308,8 +210,7 @@ static void init_littlefs()
 	Serial.println("LittleFS mounted successfully");
 }
 
-
-static String read_file(fs::FS &fs, const char * path)
+static String read_file(fs::FS &fs, const char* path)
 {
 	Serial.printf("Reading file: %s\r\n", path);
 
@@ -327,7 +228,7 @@ static String read_file(fs::FS &fs, const char * path)
 	return fileContent;
 }
 
-static void write_file(fs::FS &fs, const char * path, const char * message)
+static void write_file(fs::FS &fs, const char* path, const char* message)
 {
 	Serial.printf("Writing file: %s\r\n", path);
 
@@ -345,7 +246,7 @@ static void write_file(fs::FS &fs, const char * path, const char * message)
 
 static bool init_wifi()
 {
-	if (ssid == ""){
+	if (ssid == "") {
 		Serial.println("Undefined SSID");
 		return false;
 	}
@@ -370,6 +271,80 @@ static bool init_wifi()
 	return true;
 }
 
+static String processor(const String &var)
+{
+	if (var == "IP") {
+		return WiFi.localIP().toString();
+	} else if (var == "SERVER") {
+		return server_url;
+	} else if (var == "SSID") {
+		return ssid;
+	}
+	return String();
+}
+
+static void server_config()
+{
+	ssid = read_file(LittleFS, ssid_path);
+	pass = read_file(LittleFS, pass_path);
+	server_url = read_file(LittleFS, server_path);
+	Serial.print("SSID: ");
+	Serial.println(ssid);
+	Serial.print("Password: ");
+	Serial.println(pass);
+	Serial.print("Server: ");
+	Serial.println(server_url);
+
+	if (init_wifi()) {
+		digitalWrite(PIN_LED1, HIGH);
+		server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+			request->send(LittleFS, "/index.html", "text/html", false,
+					processor);
+		});
+	} else {
+		digitalWrite(PIN_LED1, LOW);
+		Serial.println("Setting AP");
+		WiFi.softAP(AP_STR, NULL);
+
+		IPAddress ip = WiFi.softAPIP();
+		Serial.print("AP IP address: ");
+		Serial.println(ip);
+
+		server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+			request->send(LittleFS, "/wifi_manager.html", "text/html");
+		});
+	}
+	server.serveStatic("/", LittleFS, "/");
+	server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
+		int params = request->params();
+		for (int i = 0; i < params; i++) {
+			const AsyncWebParameter* p = request->getParam(i);
+			if (p->isPost()) {
+				if (p->name() == param_ssid) {
+					ssid = p->value().c_str();
+					Serial.print("SSID set to: ");
+					Serial.println(ssid);
+					write_file(LittleFS, ssid_path, ssid.c_str());
+				} else if (p->name() == param_pass) {
+					pass = p->value().c_str();
+					Serial.print("Password set to: ");
+					Serial.println(pass);
+					write_file(LittleFS, pass_path, pass.c_str());
+				} else if (p->name() == param_server) {
+					server_url = p->value().c_str();
+					Serial.print("Server URL set to: ");
+					Serial.println(server_url);
+					write_file(LittleFS, server_path, server_url.c_str());
+				}
+			}
+		}
+		request->send(200, "text/plain", "Done. ESP will restart");
+		delay(2000);
+		ESP.restart();
+	});
+	server.begin();
+}
+
 /* Setup **********************************************************************/
 
 void setup()
@@ -380,109 +355,26 @@ void setup()
 
 	pinMode(PIN_LED1, OUTPUT);
 	pinMode(PIN_LED2, OUTPUT);
-
 	digitalWrite(PIN_LED1, LOW);
 	digitalWrite(PIN_LED2, LOW);
 
 	keypad_setup();
 	set_rows_low();
 
-	ssid = read_file(LittleFS, ssid_path);
-	pass = read_file(LittleFS, pass_path);
-	Serial.println(ssid);
-	Serial.println(pass);
+	server_config();
 
-	// Serial.print("Connecting to WiFi");
-	// WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-	// while (WiFi.status() != WL_CONNECTED) {
-	// 	Serial.print(".");
-	// 	delay(100);
-	// }
-
-	// Serial.println("");
-	// Serial.print("Connected to WiFi network with IP Address: ");
-	// Serial.println(WiFi.localIP());
-
-	if (init_wifi()) {
-		digitalWrite(PIN_LED1, HIGH);
-		server.begin();
-	} else {
-		digitalWrite(PIN_LED1, LOW);
-		Serial.println("Setting AP (Access Point)");
-		WiFi.softAP("Dartsout Dartboard", NULL);
-
-		IPAddress IP = WiFi.softAPIP();
-		Serial.print("AP IP address: ");
-		Serial.println(IP); 
-
-		server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-			request->send(LittleFS, "/wifi_manager.html", "text/html");
-		});
-		server.serveStatic("/", LittleFS, "/");
-		server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
-			int params = request->params();
-			for (int i = 0; i < params; i++) {
-				const AsyncWebParameter* p = request->getParam(i);
-				if (p->isPost()) {
-					if (p->name() == param_input_1) {
-						ssid = p->value().c_str();
-						Serial.print("SSID set to: ");
-						Serial.println(ssid);
-						write_file(LittleFS, ssid_path, ssid.c_str());
-					}
-					if (p->name() == param_input_2) {
-						pass = p->value().c_str();
-						Serial.print("Password set to: ");
-						Serial.println(pass);
-						write_file(LittleFS, pass_path, pass.c_str());
-					}
-					
-					//Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
-				}
-			}
-			request->send(200, "text/plain", "Done. ESP will restart");
-			delay(3000);
-			ESP.restart();
-		});
-		server.begin();
-	}
-
-	Serial.println("");
-	Serial.print("MAC address: ");
 	read_mac_addr();
-	Serial.print("Dartboard ID: ");
-	Serial.printf("%X\n", get_dartboard_id());
-}
-
-static void keypad_read()
-{
-	for (int i = 0; i < N_ROWS; i++) {
-		set_rows_high();
-		digitalWrite(pin_rows[i+ROWS_OFF], LOW);
-		for (int j = 0; j < N_COLS; j++) {
-			if (digitalRead(pin_cols[j+COLS_OFF]) == 0) {
-				Serial.print("Pressed: ");
-				Serial.print(i-1); // Starts in 1 and no first cable
-				Serial.print(",");
-				Serial.println(j+1); // Starts in 1
-				delay(50);
-				return;
-			}
-		}
-	}
+	Serial.printf("Dartboard ID: %X\n", get_dartboard_id());
 }
 
 /* Loop ***********************************************************************/
 
 void loop()
-{	
+{
 	if (row_pressed != NOT_DET || col_pressed != NOT_DET) {
 		digitalWrite(PIN_LED2, HIGH);
 		// TODO: Lectura lenta para ver si hay más de un botón pulsado
-		Serial.print("Row: ");
-		Serial.print(row_pressed + 1);
-		Serial.print(", col: ");
-		Serial.println(col_pressed + 1);
+		Serial.printf("Row: %d, col: %d\n", row_pressed + 1, col_pressed + 1);
 		print_value(row_pressed, col_pressed);
 		delay(100);
 		set_rows_low();
