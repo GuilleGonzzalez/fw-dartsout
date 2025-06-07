@@ -27,11 +27,11 @@ typedef enum {
 } numbers_t;
 
 typedef enum {
-	TRIPLE,
-	DOUBLE,
-	SINGLE_INT,
-	SINGLE_EXT,
-	Z_INVALID,
+	TRIPLE = 0,
+	DOUBLE = 1,
+	SINGLE_INT = 2,
+	SINGLE_EXT = 3,
+	Z_INVALID = 4,
 } zones_t;
 
 #endif // __DARTBOARD_H

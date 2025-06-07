@@ -1,3 +1,5 @@
+
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -7,7 +9,9 @@
 #include <AsyncTCP.h>
 #include "LittleFS.h"
 
-#include "dartsout_boardv1.h"
+#include "leds.h"
+
+#include "dartsout_boardv2.h"
 #include "decathlon_dartboard.h"
 
 #define AP_STR   "Dartsout Dartboard"
@@ -19,7 +23,14 @@
 extern int map_numbers[N_ROWS][N_COLS];
 extern int map_zones[N_ROWS][N_COLS];
 
-static int pin_rows[] = {10, 9, 3, 8, 18, 17, 7, 6, 5, 4};
+// TODO: move to boards
+
+// Dartsout dartboard V1
+// static int pin_rows[] = {10, 9, 3, 8, 18, 17, 7, 6, 5, 4};
+// static int pin_cols[] = {37, 36, 35, 34, 33, 21, 14, 13, 12, 11};
+
+// Dartsout dartboard V2
+static int pin_rows[] = {-1, 1, 2, 42, 41, 40, 39, 38, -1, -1};
 static int pin_cols[] = {37, 36, 35, 34, 33, 21, 14, 13, 12, 11};
 
 static volatile int row_pressed = NOT_DET;
@@ -39,16 +50,48 @@ static String server_url;
 static unsigned long previousMillis = 0;
 static const long interval = 10000; // Interval to wait for Wi-Fi conn (ms)
 
+static bool flag_next_player = false;
+
+static int dartboard_id = 0;
+
+// TODO: move to LEDs
+static int leds_num[20][3] = {
+	{27, 28, 29}, // 1
+	{4, 5, 6}, // 2
+	{64, 65, 66}, // 3
+	{20, 21, 22}, // 4
+	{34, 35, 35}, // 5
+	{14, 15, 16}, // 6
+	{57, 58, 59}, // 7
+	{50, 51, 52}, // 8
+	{40, 41, 42}, // 9
+	{10, 11, 12}, // 10
+	{47, 48, 49}, // 11
+	{37, 38, 39}, // 12
+	{17, 18, 19}, // 13
+	{44, 45, 46}, // 14
+	{7, 8, 9}, // 15
+	{54, 55, 56}, // 16
+	{0, 1, 2}, // 17
+	{24, 25, 26}, // 18
+	{60, 61, 62}, // 19
+	{30, 31, 32}, // 20
+};
+
+
 AsyncWebServer server(80);
 
 /** Function prototypes *******************************************************/
 
 static void IRAM_ATTR dart_cb(void* arg);
+static void IRAM_ATTR btn_player_cb(void* arg);
 
 static void set_rows_low();
 static void set_rows_high();
 static void print_value(int i, int j);
 static void keypad_setup();
+static void buttons_setup();
+static void send_next_player();
 static void send_dart(int num, int zone);
 static void keypad_read();
 static void read_mac_addr();
@@ -58,6 +101,7 @@ static String read_file(fs::FS &fs, const char* path);
 static void write_file(fs::FS &fs, const char* path, const char* message);
 static bool init_wifi();
 static String processor(const String &var);
+static void setAP();
 static void server_config();
 
 /** Callbacks *****************************************************************/
@@ -79,6 +123,11 @@ static void IRAM_ATTR dart_cb(void* arg)
 		}
 		digitalWrite(pin_rows[i+ROWS_OFF], LOW);
 	}
+}
+
+static void IRAM_ATTR btn_player_cb(void* arg)
+{
+	flag_next_player = true;
 }
 
 /** Function definitions ******************************************************/
@@ -133,16 +182,50 @@ static void keypad_setup()
 	}
 }
 
+static void buttons_setup()
+{
+	// TODO: iterate buttons
+	for (int i = 0; i < 1; i++) {
+		//TODO: define buttons SW5(PLAYER) -> GPIO6
+		pinMode(BTN_PLAYER, INPUT);
+		attachInterruptArg(BTN_PLAYER, btn_player_cb, NULL, FALLING);
+	}
+}
+
+static void send_next_player()
+{
+	if (WiFi.status() == WL_CONNECTED) {
+		WiFiClient client;
+		HTTPClient http;
+		//TODO: send board_id instead hardcoded id=0
+		String serverPath = server_url + "next-player?id=0";
+		Serial.println(serverPath);
+		http.begin(client, serverPath.c_str());
+		int httpResponseCode = http.GET();
+		if (httpResponseCode > 0) {
+			Serial.print("HTTP Response code: ");
+			Serial.println(httpResponseCode);
+			String payload = http.getString();
+			Serial.println(payload);
+		} else {
+			Serial.print("Error code: ");
+			Serial.println(httpResponseCode);
+		}
+		http.end();
+	} else {
+		Serial.println("WiFi Disconnected");
+	}
+}
 static void send_dart(int num, int zone)
 {
 	if (WiFi.status() == WL_CONNECTED) {
 		WiFiClient client;
 		HTTPClient http;
-		String serverPath = server_url + "new-dart?id=0";
+		String serverPath = server_url + "new-dart";
 		http.begin(client, serverPath.c_str());
 		http.addHeader("Content-Type", "application/json");
 		JsonDocument json;
-		json["board_id"] = BOARD_ID;
+		json["board_id"] = dartboard_id;
 		json["num"] = num;
 		json["zone"] = zone;
 		String json_str;
@@ -216,7 +299,7 @@ static String read_file(fs::FS &fs, const char* path)
 
 	File file = fs.open(path);
 	if (!file || file.isDirectory()) {
-		Serial.println("- failed to open file for reading");
+		Serial.println("Failed to open file for reading");
 		return String();
 	}
 	
@@ -234,13 +317,24 @@ static void write_file(fs::FS &fs, const char* path, const char* message)
 
 	File file = fs.open(path, FILE_WRITE);
 	if (!file){
-		Serial.println("- failed to open file for writing");
+		Serial.println("Failed to open file for writing");
 		return;
 	}
 	if (file.print(message)){
-		Serial.println("- file written");
+		Serial.println("File written");
 	} else {
-		Serial.println("- write failed");
+		Serial.println("Write failed");
+	}
+}
+
+static void delete_file(fs::FS &fs, const char* path)
+{
+	Serial.printf("Deleting file: %s\r\n", path);
+
+	if (fs.remove(path)) {
+		Serial.println("File deleted");
+	} else {
+		Serial.println("Delete failed");
 	}
 }
 
@@ -283,6 +377,20 @@ static String processor(const String &var)
 	return String();
 }
 
+static void setAP()
+{
+	Serial.println("Setting AP");
+	WiFi.softAP(AP_STR, NULL);
+
+	IPAddress ip = WiFi.softAPIP();
+	Serial.print("AP IP address: ");
+	Serial.println(ip);
+
+	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+		request->send(LittleFS, "/wifi_manager.html", "text/html");
+	});
+}
+
 static void server_config()
 {
 	ssid = read_file(LittleFS, ssid_path);
@@ -302,17 +410,9 @@ static void server_config()
 					processor);
 		});
 	} else {
+		//TODO: when AP mode, led blinking
+		setAP();
 		digitalWrite(PIN_LED1, LOW);
-		Serial.println("Setting AP");
-		WiFi.softAP(AP_STR, NULL);
-
-		IPAddress ip = WiFi.softAPIP();
-		Serial.print("AP IP address: ");
-		Serial.println(ip);
-
-		server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-			request->send(LittleFS, "/wifi_manager.html", "text/html");
-		});
 	}
 	server.serveStatic("/", LittleFS, "/");
 	server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -359,18 +459,116 @@ void setup()
 	digitalWrite(PIN_LED2, LOW);
 
 	keypad_setup();
+	buttons_setup();
 	set_rows_low();
 
 	server_config();
 
+	leds_init();
+
 	read_mac_addr();
-	Serial.printf("Dartboard ID: %X\n", get_dartboard_id());
+	dartboard_id = get_dartboard_id();
+	Serial.printf("Dartboard ID: %X\n", dartboard_id);
+}
+
+static void rainbow_loop_leds()
+{
+	static long last_time = 0;
+	static uint32_t first_pixel_hue = 0;
+	long now = millis();
+
+	if (now - last_time > 10) {
+		leds_rainbow(first_pixel_hue);
+		first_pixel_hue += 200;
+		last_time = now;
+		leds_show();
+	}
+}
+
+static void set_sector_led(int num, int color)
+{
+	leds_set_color(0);
+	for (int i = 0; i < 3; i++) {
+		leds_set_pixel_color(leds_num[num][i], color);
+	}
+	leds_show();
+}
+
+static void show_leds(int num, int zone)
+{
+	if (num == 0) {
+		if (zone == DOUBLE) {
+			leds_color_wipe(leds_color(0, 255, 0, 0), 10);
+		} else {
+			leds_color_wipe(leds_color(0, 0, 0, 255), 10);
+		}
+	} else {
+		switch (zone) {
+		case SINGLE_EXT:
+		case SINGLE_INT:
+			set_sector_led(num-1, leds_color(0, 0, 0, 255));
+			break;
+		case DOUBLE:
+			set_sector_led(num-1, leds_color(0, 0, 0, 255));
+			delay(100);
+			set_sector_led(num-1, 0);
+			delay(200);
+			set_sector_led(num-1, leds_color(0, 0, 0, 255));
+			break;
+		case TRIPLE:
+			set_sector_led(num-1, leds_color(0, 0, 0, 255));
+			delay(100);
+			set_sector_led(num-1, 0);
+			delay(200);
+			set_sector_led(num-1, leds_color(0, 0, 0, 255));
+			delay(100);
+			set_sector_led(num-1, 0);
+			delay(200);
+			set_sector_led(num-1, leds_color(0, 0, 0, 255));
+			break;
+		}
+	}
+	delay(1000);
 }
 
 /* Loop ***********************************************************************/
 
+
 void loop()
 {
+	rainbow_loop_leds();
+
+	if (flag_next_player) {
+		Serial.println("Next player!");
+		send_next_player();
+		delay(1000);
+		flag_next_player = false;
+	}
+
+
+	if (digitalRead(BTN_POWER) == 0) {
+		Serial.println("Power button");
+		int set_factory_reset_flag = 1;
+		for (int i = 0; i < 5000; i++) {
+			delay(1);
+			if (digitalRead(BTN_POWER) == 1) {
+				set_factory_reset_flag = 0;
+				break;
+			}
+		}
+		if (set_factory_reset_flag) {
+			Serial.println("Factory reset");
+			//TODO: mejor un factory reset. Si está disponible el wifi, se va a conectar de nuevo y no se va a poder configurar
+			// Factory reset sería borrar los files y hacer un restart
+			delete_file(LittleFS, ssid_path);
+			delete_file(LittleFS, pass_path);
+			delete_file(LittleFS, server_path);
+			delay(2000);
+			ESP.restart();
+			// setAP();
+		}
+	}
+
 	if (row_pressed != NOT_DET || col_pressed != NOT_DET) {
 		digitalWrite(PIN_LED2, HIGH);
 		// TODO: Lectura lenta para ver si hay más de un botón pulsado
@@ -382,6 +580,8 @@ void loop()
 			int num = map_numbers[row_pressed][col_pressed];
 			int zone = map_zones[row_pressed][col_pressed];
 			send_dart(num, zone);
+			show_leds(num, zone);
+
 		}
 		row_pressed = NOT_DET;
 		col_pressed = NOT_DET;
