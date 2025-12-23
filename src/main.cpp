@@ -14,9 +14,14 @@
 #include "dartsout_boardv2.h"
 #include "decathlon_dartboard.h"
 
-#define AP_STR   "Dartsout Dartboard"
-#define NOT_DET  -1
-#define ERR_READ -2
+#define AP_STR        "DartsOut Dartboard"
+#define AP_STR_PREFIX "DARTSOUT_"
+#define NOT_DET       -1
+#define ERR_READ      -2
+
+#define FACTORY_RESET_INTERVAL_MS  5000
+#define BLINK_INTERVAL_MS          500
+#define WIFI_CONN_INTERVAL_MS      10000 // Interval to wait for Wi-Fi conn
 
 /** Global variables **********************************************************/
 
@@ -47,17 +52,23 @@ static String ssid;
 static String pass;
 static String server_url;
 
-static unsigned long previousMillis = 0;
-static const long interval = 10000; // Interval to wait for Wi-Fi conn (ms)
 
+static uint32_t last_wifi_conn = 0;
+static uint32_t last_toggle = 0;
+static uint32_t last_leds_time = 0;
+
+static bool led_conn_state = false;
+
+static bool flag_ap_mode = false;
 static bool flag_next_player = false;
+static bool flag_back = false;
 
 static int dartboard_id = 0;
 
 // TODO: move to LEDs
 static int leds_num[20][3] = {
 	{27, 28, 29}, // 1
-	{4, 5, 6}, // 2
+	{4, 5, 6},    // 2
 	{64, 65, 66}, // 3
 	{20, 21, 22}, // 4
 	{34, 35, 35}, // 5
@@ -70,14 +81,13 @@ static int leds_num[20][3] = {
 	{37, 38, 39}, // 12
 	{17, 18, 19}, // 13
 	{44, 45, 46}, // 14
-	{7, 8, 9}, // 15
+	{7, 8, 9},    // 15
 	{54, 55, 56}, // 16
-	{0, 1, 2}, // 17
+	{0, 1, 2},    // 17
 	{24, 25, 26}, // 18
 	{60, 61, 62}, // 19
 	{30, 31, 32}, // 20
 };
-
 
 AsyncWebServer server(80);
 
@@ -85,6 +95,7 @@ AsyncWebServer server(80);
 
 static void IRAM_ATTR dart_cb(void* arg);
 static void IRAM_ATTR btn_player_cb(void* arg);
+static void IRAM_ATTR btn_back_cb(void* arg);
 
 static void set_rows_low();
 static void set_rows_high();
@@ -92,6 +103,7 @@ static void print_value(int i, int j);
 static void keypad_setup();
 static void buttons_setup();
 static void send_next_player();
+static void send_back();
 static void send_dart(int num, int zone);
 static void keypad_read();
 static void read_mac_addr();
@@ -128,6 +140,11 @@ static void IRAM_ATTR dart_cb(void* arg)
 static void IRAM_ATTR btn_player_cb(void* arg)
 {
 	flag_next_player = true;
+}
+
+static void IRAM_ATTR btn_back_cb(void* arg)
+{
+	flag_back = true;
 }
 
 /** Function definitions ******************************************************/
@@ -184,12 +201,11 @@ static void keypad_setup()
 
 static void buttons_setup()
 {
-	// TODO: iterate buttons
-	for (int i = 0; i < 1; i++) {
-		//TODO: define buttons SW5(PLAYER) -> GPIO6
-		pinMode(BTN_PLAYER, INPUT);
-		attachInterruptArg(BTN_PLAYER, btn_player_cb, NULL, FALLING);
-	}
+	pinMode(BTN_PLAYER, INPUT);
+	pinMode(BTN_BACK, INPUT);
+
+	attachInterruptArg(BTN_PLAYER, btn_player_cb, NULL, FALLING);
+	attachInterruptArg(BTN_BACK, btn_back_cb, NULL, FALLING);
 }
 
 static void send_next_player()
@@ -197,11 +213,14 @@ static void send_next_player()
 	if (WiFi.status() == WL_CONNECTED) {
 		WiFiClient client;
 		HTTPClient http;
-		//TODO: send board_id instead hardcoded id=0
-		String serverPath = server_url + "next-player?id=0";
-		Serial.println(serverPath);
+		String serverPath = server_url + "next-player";
 		http.begin(client, serverPath.c_str());
-		int httpResponseCode = http.GET();
+		http.addHeader("Content-Type", "application/json");
+		JsonDocument json;
+		json["board_id"] = dartboard_id;
+		String json_str;
+		serializeJson(json, json_str);
+		int httpResponseCode = http.POST(json_str);
 		if (httpResponseCode > 0) {
 			Serial.print("HTTP Response code: ");
 			Serial.println(httpResponseCode);
@@ -216,6 +235,35 @@ static void send_next_player()
 		Serial.println("WiFi Disconnected");
 	}
 }
+
+static void send_back()
+{
+	if (WiFi.status() == WL_CONNECTED) {
+		WiFiClient client;
+		HTTPClient http;
+		String serverPath = server_url + "back";
+		http.begin(client, serverPath.c_str());
+		http.addHeader("Content-Type", "application/json");
+		JsonDocument json;
+		json["board_id"] = dartboard_id;
+		String json_str;
+		serializeJson(json, json_str);
+		int httpResponseCode = http.POST(json_str);
+		if (httpResponseCode > 0) {
+			Serial.print("HTTP Response code: ");
+			Serial.println(httpResponseCode);
+			String payload = http.getString();
+			Serial.println(payload);
+		} else {
+			Serial.print("Error code: ");
+			Serial.println(httpResponseCode);
+		}
+		http.end();
+	} else {
+		Serial.println("WiFi Disconnected");
+	}
+}
+
 static void send_dart(int num, int zone)
 {
 	if (WiFi.status() == WL_CONNECTED) {
@@ -349,12 +397,12 @@ static bool init_wifi()
 	WiFi.begin(ssid.c_str(), pass.c_str());
 	Serial.println("Connecting to WiFi...");
 
-	unsigned long currentMillis = millis();
-	previousMillis = currentMillis;
+	unsigned long now = millis();
+	last_wifi_conn = now;
 
 	while (WiFi.status() != WL_CONNECTED) {
-		currentMillis = millis();
-		if (currentMillis - previousMillis >= interval) {
+		now = millis();
+		if (now - last_wifi_conn >= WIFI_CONN_INTERVAL_MS) {
 			Serial.println("Failed to connect.");
 			return false;
 		}
@@ -380,6 +428,12 @@ static String processor(const String &var)
 static void setAP()
 {
 	Serial.println("Setting AP");
+	//TODO: get mac -> DARTSOUT_5621A0, parece que hay problemas cogiendo la mac pronto, ver como solucionar (ESP.getFuseMac()?)
+	// String ap_str;
+	// ap_str.reserve(64);
+	// ap_str = AP_STR_PREFIX;
+	// ap_str += dartboard_id;
+	// WiFi.softAP(ap_str.c_str(), NULL);
 	WiFi.softAP(AP_STR, NULL);
 
 	IPAddress ip = WiFi.softAPIP();
@@ -404,15 +458,16 @@ static void server_config()
 	Serial.println(server_url);
 
 	if (init_wifi()) {
-		digitalWrite(PIN_LED1, HIGH);
+		flag_ap_mode = false;
+		digitalWrite(LED_CONN, HIGH);
 		server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
 			request->send(LittleFS, "/index.html", "text/html", false,
 					processor);
 		});
 	} else {
-		//TODO: when AP mode, led blinking
+		flag_ap_mode = true;
 		setAP();
-		digitalWrite(PIN_LED1, LOW);
+		digitalWrite(LED_CONN, LOW);
 	}
 	server.serveStatic("/", LittleFS, "/");
 	server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -453,17 +508,16 @@ void setup()
 
 	init_littlefs();
 
-	pinMode(PIN_LED1, OUTPUT);
-	pinMode(PIN_LED2, OUTPUT);
-	digitalWrite(PIN_LED1, LOW);
-	digitalWrite(PIN_LED2, LOW);
+	pinMode(LED_CONN, OUTPUT);
+	pinMode(LED_SEND, OUTPUT);
+	digitalWrite(LED_CONN, LOW);
+	digitalWrite(LED_SEND, LOW);
 
 	keypad_setup();
 	buttons_setup();
 	set_rows_low();
 
 	server_config();
-
 	leds_init();
 
 	read_mac_addr();
@@ -473,14 +527,13 @@ void setup()
 
 static void rainbow_loop_leds()
 {
-	static long last_time = 0;
 	static uint32_t first_pixel_hue = 0;
-	long now = millis();
+	uint32_t now = millis();
 
-	if (now - last_time > 10) {
+	if (now - last_leds_time > 10) {
 		leds_rainbow(first_pixel_hue);
 		first_pixel_hue += 200;
-		last_time = now;
+		last_leds_time = now;
 		leds_show();
 	}
 }
@@ -533,23 +586,37 @@ static void show_leds(int num, int zone)
 
 /* Loop ***********************************************************************/
 
-
 void loop()
 {
 	rainbow_loop_leds();
 
+	if (flag_ap_mode) {
+		uint32_t now = millis();
+		if (now - last_toggle >= BLINK_INTERVAL_MS) {
+			last_toggle = now;
+			led_conn_state = !led_conn_state;
+			digitalWrite(LED_CONN, led_conn_state);
+		}
+	}
+
 	if (flag_next_player) {
-		Serial.println("Next player!");
+		Serial.println("Next player");
 		send_next_player();
 		delay(1000);
 		flag_next_player = false;
 	}
 
+	if (flag_back) {
+		Serial.println("Back");
+		send_back();
+		delay(1000);
+		flag_back = false;
+	}
 
 	if (digitalRead(BTN_POWER) == 0) {
 		Serial.println("Power button");
 		int set_factory_reset_flag = 1;
-		for (int i = 0; i < 5000; i++) {
+		for (int i = 0; i < FACTORY_RESET_INTERVAL_MS; i++) {
 			delay(1);
 			if (digitalRead(BTN_POWER) == 1) {
 				set_factory_reset_flag = 0;
@@ -558,19 +625,16 @@ void loop()
 		}
 		if (set_factory_reset_flag) {
 			Serial.println("Factory reset");
-			//TODO: mejor un factory reset. Si está disponible el wifi, se va a conectar de nuevo y no se va a poder configurar
-			// Factory reset sería borrar los files y hacer un restart
 			delete_file(LittleFS, ssid_path);
 			delete_file(LittleFS, pass_path);
 			delete_file(LittleFS, server_path);
 			delay(2000);
 			ESP.restart();
-			// setAP();
 		}
 	}
 
 	if (row_pressed != NOT_DET || col_pressed != NOT_DET) {
-		digitalWrite(PIN_LED2, HIGH);
+		digitalWrite(LED_SEND, HIGH);
 		// TODO: Lectura lenta para ver si hay más de un botón pulsado
 		Serial.printf("Row: %d, col: %d\n", row_pressed + 1, col_pressed + 1);
 		print_value(row_pressed, col_pressed);
@@ -586,7 +650,7 @@ void loop()
 		row_pressed = NOT_DET;
 		col_pressed = NOT_DET;
 		Serial.println("Ready");
-		digitalWrite(PIN_LED2, LOW);
+		digitalWrite(LED_SEND, LOW);
 	}
 	// keypad_read();
 }

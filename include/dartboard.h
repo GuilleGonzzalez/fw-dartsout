@@ -27,10 +27,10 @@ typedef enum {
 } numbers_t;
 
 typedef enum {
-	TRIPLE = 0,
-	DOUBLE = 1,
-	SINGLE_INT = 2,
-	SINGLE_EXT = 3,
+	SINGLE_INT = 0,
+	SINGLE_EXT = 1,
+	DOUBLE = 2,
+	TRIPLE = 3,
 	Z_INVALID = 4,
 } zones_t;
 
